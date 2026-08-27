@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import base64
+import re
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
 
@@ -34,6 +36,11 @@ class ContactBase(BaseModel):
     )
     company: str | None = Field(
         default=None,
+
+    @field_validator("photo", mode="before")
+    @classmethod
+    def _validate_photo_patch(cls, value):
+        return _validate_photo_string(value)
         max_length=200,
         description="Employer or organisation name.",
         examples=["Analytical Engines"],
@@ -71,9 +78,18 @@ class ContactBase(BaseModel):
     )
     photo: str | None = Field(
         default=None,
-        description="Contact photo as a base64-encoded string (data URL format recommended).",
+        description=(
+            "Contact photo as a base64-encoded string. Data URL format is recommended "
+            "(e.g. data:image/png;base64,...). Supported MIME types: image/png, image/jpeg, image/gif, image/webp. "
+            "Maximum decoded image size: 1 MB."
+        ),
         examples=["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."],
     )
+
+    @field_validator("photo", mode="before")
+    @classmethod
+    def _validate_photo(cls, value):
+        return _validate_photo_string(value)
 
 
 _FULL_EXAMPLE = {
@@ -108,6 +124,38 @@ class ContactReplace(ContactBase):
     """
 
     model_config = ConfigDict(json_schema_extra={"examples": [_FULL_EXAMPLE]})
+
+
+# Photo validation helpers
+_PHOTO_MAX_BYTES = 1_000_000  # 1 MB decoded
+_DATA_URL_RE = re.compile(r"^data:(image/(?:png|jpeg|gif|webp))(?:;charset=[^;]+)?;base64,([A-Za-z0-9+/=\n\r]+)$", re.IGNORECASE)
+
+
+def _validate_photo_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("photo must be a base64-encoded string or data URL")
+
+    s = value.strip()
+    m = _DATA_URL_RE.match(s)
+    if m:
+        b64_part = m.group(2)
+    else:
+        # allow raw base64 without data: prefix
+        if "," in s:
+            raise ValueError("photo must be a data URL or raw base64 string")
+        b64_part = s
+
+    try:
+        decoded = base64.b64decode(b64_part, validate=True)
+    except Exception:
+        raise ValueError("photo is not valid base64")
+
+    if len(decoded) > _PHOTO_MAX_BYTES:
+        raise ValueError(f"photo exceeds maximum size of {_PHOTO_MAX_BYTES} bytes")
+
+    return s
 
 
 class ContactUpdate(BaseModel):
