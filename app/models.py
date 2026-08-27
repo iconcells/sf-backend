@@ -30,6 +30,10 @@ class Contact(Base):
     country: Mapped[str | None] = mapped_column(String(120))
 
     notes: Mapped[str | None] = mapped_column(Text)
+    # Photo bytes can be large — consider storing images outside the contacts
+    # row (object storage or separate table) rather than inline text. For now
+    # the API validates incoming data and we keep the column as text.
+    photo: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now(), nullable=False
