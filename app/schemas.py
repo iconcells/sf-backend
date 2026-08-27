@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import base64
 import re
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
 
@@ -36,11 +37,6 @@ class ContactBase(BaseModel):
     )
     company: str | None = Field(
         default=None,
-
-    @field_validator("photo", mode="before")
-    @classmethod
-    def _validate_photo_patch(cls, value):
-        return _validate_photo_string(value)
         max_length=200,
         description="Employer or organisation name.",
         examples=["Analytical Engines"],
@@ -128,7 +124,23 @@ class ContactReplace(ContactBase):
 
 # Photo validation helpers
 _PHOTO_MAX_BYTES = 1_000_000  # 1 MB decoded
-_DATA_URL_RE = re.compile(r"^data:(image/(?:png|jpeg|gif|webp))(?:;charset=[^;]+)?;base64,([A-Za-z0-9+/=\n\r]+)$", re.IGNORECASE)
+_DATA_URL_RE = re.compile(
+    r"^data:(image/(?:png|jpeg|gif|webp))(?:;charset=[^;]+)?;base64,([A-Za-z0-9+/=\n\r]+)$",
+    re.IGNORECASE,
+)
+
+
+def _detect_image_mime(decoded: bytes) -> Optional[str]:
+    """Return an image MIME string for known headers, or None."""
+    if decoded.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if decoded.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if decoded.startswith(b"GIF87a") or decoded.startswith(b"GIF89a"):
+        return "image/gif"
+    if len(decoded) >= 12 and decoded[0:4] == b"RIFF" and decoded[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def _validate_photo_string(value: str | None) -> str | None:
@@ -139,7 +151,9 @@ def _validate_photo_string(value: str | None) -> str | None:
 
     s = value.strip()
     m = _DATA_URL_RE.match(s)
+    declared_mime = None
     if m:
+        declared_mime = m.group(1).lower()
         b64_part = m.group(2)
     else:
         # allow raw base64 without data: prefix
@@ -152,8 +166,18 @@ def _validate_photo_string(value: str | None) -> str | None:
     except Exception:
         raise ValueError("photo is not valid base64")
 
+    if len(decoded) == 0:
+        raise ValueError("photo must contain image data")
+
     if len(decoded) > _PHOTO_MAX_BYTES:
         raise ValueError(f"photo exceeds maximum size of {_PHOTO_MAX_BYTES} bytes")
+
+    detected = _detect_image_mime(decoded)
+    if detected is None:
+        raise ValueError("photo is not a supported image format (png, jpeg, gif, webp)")
+
+    if declared_mime is not None and declared_mime.lower() != detected:
+        raise ValueError("data URL MIME type does not match actual image format")
 
     return s
 
@@ -188,6 +212,11 @@ class ContactUpdate(BaseModel):
     country: str | None = Field(default=None, max_length=120, description="New country.")
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
     photo: str | None = Field(default=None, description="New contact photo as a base64-encoded string (data URL format recommended).")
+
+    @field_validator("photo", mode="before")
+    @classmethod
+    def _validate_photo_patch(cls, value):
+        return _validate_photo_string(value)
 
 
 class ContactRead(ContactBase):
